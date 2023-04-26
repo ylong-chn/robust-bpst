@@ -1,0 +1,453 @@
+---
+title: "Robust BPST Simulation"
+author: "Yang Long"
+date: "2023-04-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(Triangulation)
+library(BPST)
+library(tidyverse)
+library(plotly)
+library(pense)
+library(robustbase)
+source("robust_bpst_functions.R")
+set.seed(20230426)
+```
+
+In this section, we perform simulation study of robust BPST using the setup in Example 1 of Lai and Wang (2013). 
+Specifically, for the regression problem
+$$
+Y=\mu(x_1,x_2) + \epsilon,
+$$
+we consider the following two signal functions: 
+
+- Linear
+$$
+\mu_1(x_1, x_2) = 10x_1 + x_2 + 19
+$$
+
+- Sinusoidal: 
+$$
+\mu_2(x_1,x_2) = 24 + 5\sin\left(\pi(x_1^2+x_2^2)\right)
+$$
+
+### Data Generation 
+
+a $101 \times 101$ grid with values evenly spaced between 0 and 1 is created on a square domain 
+$[0,1]^2$
+
+```{r echo=TRUE}
+# create boundary
+bb <- rbind(c(0, 0), c(1, 0), c(1, 1), c(0, 1), c(0, 0))
+
+# grid resolution
+grid_size <- c(101, 101)
+
+# create coordinates
+xy_grid <- expand.grid(seq(min(bb[,1]), max(bb[,1]), length = grid_size[1]), 
+                       seq(min(bb[,2]), max(bb[,2]), length = grid_size[2]))
+Z <- as.matrix(xy_grid)
+
+# True signal 
+true_sig_1 <- apply(Z, 1, function(x) 10*x[1] + x[2] + 19)
+true_sig_2 <- apply(Z, 1, function(x) 24 + 5*sin(pi*(x[1]^2 + x[2]^2)))
+
+# generate a sample of 2000 observations and different levels of contamination 
+sample_size <- 2000
+
+generate_sample <- function(resp_all, grid_size, sample_size, contamination) {
+  selected <- sample(prod(grid_size), size = sample_size)
+  resp_sample <- resp_all[selected]
+  cont_ind <- sample(sample_size, size = sample_size * contamination)
+  noise <- rep(0, sample_size)
+  noise[cont_ind] <- rnorm(length(cont_ind), mean = 20, sd = 3)
+  noise[-cont_ind] <- rnorm(sample_size - length(cont_ind), mean = 0, sd = 1)
+  resp_sample <- resp_sample + noise 
+  
+  list(
+    index = selected, 
+    grid_samples = Z[selected, ],
+    Y = resp_sample
+  )
+}
+
+# we generate two samples, one with 20% contamination, and the other one with 40% contamination 
+sample_1_1 <- generate_sample(true_sig_1, grid_size = grid_size, sample_size = sample_size, contamination = 0.2)
+sample_1_2 <- generate_sample(true_sig_1, grid_size = grid_size, sample_size = sample_size, contamination = 0.4)
+
+Y1_1 <- sample_1_1$Y
+Y1_2 <- sample_1_2$Y
+
+# same for the second setup 
+sample_2_1 <- generate_sample(true_sig_2, grid_size = grid_size, sample_size = sample_size, contamination = 0.2)
+sample_2_2 <- generate_sample(true_sig_2, grid_size = grid_size, sample_size = sample_size, contamination = 0.4)
+
+Y2_1 <- sample_2_1$Y
+Y2_2 <- sample_2_2$Y
+```
+
+### Triangulation 
+
+Next we triangulate the domain using `TriMesh()` function from the `Triangulation` package.
+
+```{r warning=FALSE}
+# triangulation
+VT <- TriMesh(bb, n = 3)
+# vertices 
+V <- VT$V
+# triangles
+Tr <- VT$Tr
+```
+
+### LS fitting 
+
+```{r warning=FALSE}
+deg <- 3
+
+mfit1_1 <- fit.BPST(Y = Y1_1, Z = sample_1_1$grid_samples, V = V, Tr = Tr, d = deg)
+mfit1_2 <- fit.BPST(Y = Y1_2, Z = sample_1_2$grid_samples, V = V, Tr = Tr, d = deg)
+mfit2_1 <- fit.BPST(Y = Y2_1, Z = sample_2_1$grid_samples, V = V, Tr = Tr, d = deg)
+mfit2_2 <- fit.BPST(Y = Y2_2, Z = sample_2_2$grid_samples, V = V, Tr = Tr, d = deg)
+
+pred1_1 <- predict.BPST(mfit1_1, Zpred = Z)
+pred1_2 <- predict.BPST(mfit1_2, Zpred = Z)
+pred2_1 <- predict.BPST(mfit2_1, Zpred = Z)
+pred2_2 <- predict.BPST(mfit2_2, Zpred = Z)
+
+z1_1 <- matrix(pred1_1$Ypred, nrow = 101, byrow = TRUE)
+z1_2 <- matrix(pred1_2$Ypred, nrow = 101, byrow = TRUE)
+z2_1 <- matrix(pred2_1$Ypred, nrow = 101, byrow = TRUE)
+z2_2 <- matrix(pred2_2$Ypred, nrow = 101, byrow = TRUE)
+
+df1_1 <- data.frame(sample_1_1$grid_samples, Y1_1)
+df1_2 <- data.frame(sample_1_2$grid_samples, Y1_2)
+df2_1 <- data.frame(sample_2_1$grid_samples, Y2_1)
+df2_2 <- data.frame(sample_2_2$grid_samples, Y2_2)
+```
+
+```{r fig.height = 4, fig.width = 10, fig.align = "center", out.width='100%', warning=FALSE}
+plotly_figure1_1 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z1_1,
+  type = "surface",
+  scene = 'scene1'
+) %>%
+  # add_surface(x = unique(xy_grid[, 1]),
+  #             y = unique(xy_grid[, 2]),
+  #             z = matrix(true_sig_1, nrow = 101, byrow = TRUE)) %>%
+  add_trace(data = df1_1, x = df1_1[ , 1], y = df1_1[ , 2], z = df1_1[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black")) %>%
+  layout(scene1 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure1_2 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z1_2,
+  type = "surface",
+  scene = 'scene2'
+) %>%
+  # add_surface(x = unique(xy_grid[, 1]),
+  #             y = unique(xy_grid[, 2]),
+  #             z = matrix(true_sig_1, nrow = 101, byrow = TRUE)) %>%
+  add_trace(data = df1_2, x = df1_2[ , 1], y = df1_2[ , 2], z = df1_2[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black")) %>%
+  layout(scene2 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure2_1 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z2_1,
+  type = "surface",
+  scene = 'scene3'
+) %>%
+  # add_surface(x = unique(xy_grid[, 1]),
+  #             y = unique(xy_grid[, 2]),
+  #             z = matrix(true_sig_1, nrow = 101, byrow = TRUE)) %>%
+  add_trace(data = df2_1, x = df2_1[ , 1], y = df2_1[ , 2], z = df2_1[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black")) %>%
+  layout(scene3 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure2_2 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z2_2,
+  type = "surface",
+  scene = 'scene4'
+) %>%
+  # add_surface(x = unique(xy_grid[, 1]),
+  #             y = unique(xy_grid[, 2]),
+  #             z = matrix(true_sig_1, nrow = 101, byrow = TRUE)) %>%
+  add_trace(data = df2_2, x = df2_2[ , 1], y = df2_2[ , 2], z = df2_2[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black")) %>%
+  layout(scene4 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+subplot(plotly_figure1_1, plotly_figure1_2, plotly_figure2_1, plotly_figure2_2, nrows=2)
+```
+
+### BPST S-estimator
+
+```{r}
+# use a random subsample to create an initial solution 
+generate_initial <- function(B, Y, lamb, sample_size, subsample_size, num_init = 5) {
+  solution <- lapply(1:num_init, function(i) {
+    sub_sample <- sample(sample_size, subsample_size)
+    B_sub <- B[sub_sample,]
+    Y_sub <- Y[sub_sample]
+    solve(t(Q2) %*% (t(B_sub)%*%B_sub + lamb * K) %*% Q2) %*% t(Q2) %*% t(B_sub) %*% Y_sub
+  })
+  
+  do.call(cbind, solution)
+}
+```
+
+```{r}
+# for first setup 
+lamb <- 1e6
+subsample_size <- 500
+num_init <- 3
+
+
+# for 20% contamination 
+Bfull <- basis(V,Tr,d=deg,r=1,Z=sample_1_1$grid_samples,Hmtx=TRUE,Kmtx=TRUE,QR=TRUE,TA=TRUE)
+B <- Bfull$B
+H <- Bfull$H
+Q2 <- Bfull$Q2
+K <- Bfull$K
+gamma <- matrix(0, nrow = dim(B)[2], ncol = num_init)
+obj_fun_val <- rep(0, num_init)
+iter1_1 <- rep(0, num_init)
+
+theta_start_1_1 <- generate_initial(B, Y1_1, lamb, sample_size, subsample_size, num_init = num_init)
+for (i in 1:num_init) {
+  sfit_1 <- robust.BPST.est.s.1(B, Q2, K, lambda = lamb, Y = Y1_1, 
+                                rho = "bisquare", bdp = 0.5, 
+                                theta_start = as.matrix(theta_start_1_1[,i]),
+                                maxit = 500, tol = 1e-6)
+  iter1_1[i] <- sfit_1$iteration
+  gamma[,i] <- drop(sfit_1$gamma)
+  obj_fun_val[i] <- sfit_1$obj_fun
+}
+gamma_s_1_1 <- gamma[, which.min(obj_fun_val)]
+
+# for 40% contamination 
+Bfull <- basis(V,Tr,d=deg,r=1,Z=sample_1_2$grid_samples,Hmtx=TRUE,Kmtx=TRUE,QR=TRUE,TA=TRUE)
+B <- Bfull$B
+H <- Bfull$H
+Q2 <- Bfull$Q2
+K <- Bfull$K
+gamma <- matrix(0, nrow = dim(B)[2], ncol = num_init)
+obj_fun_val <- rep(0, num_init)
+iter1_2 <- rep(0, num_init)
+
+theta_start_1_2 <- generate_initial(B, Y1_2, lamb, sample_size, subsample_size, num_init = num_init)
+for (i in 1:num_init) {
+  sfit_2 <- robust.BPST.est.s.1(B, Q2, K, lambda = lamb, Y = Y1_2, 
+                                rho = "bisquare", bdp = 0.5, 
+                                theta_start = as.matrix(theta_start_1_2[,i]),
+                                maxit = 500, tol = 1e-6)
+  iter1_2[i] <- sfit_2$iteration
+  gamma[,i] <- drop(sfit_2$gamma)
+  obj_fun_val[i] <- sfit_2$obj_fun
+}
+gamma_s_1_2 <- gamma[, which.min(obj_fun_val)]
+```
+
+```{r}
+# for second setup 
+lamb <- 0.00001
+# for 20% contamination 
+Bfull <- basis(V,Tr,d=deg,r=1,Z=sample_2_1$grid_samples,Hmtx=TRUE,Kmtx=TRUE,QR=TRUE,TA=TRUE)
+B <- Bfull$B
+H <- Bfull$H
+Q2 <- Bfull$Q2
+K <- Bfull$K
+gamma <- matrix(0, nrow = dim(B)[2], ncol = num_init)
+obj_fun_val <- rep(0, num_init)
+iter2_1 <- rep(0, num_init)
+
+theta_start_2_1 <- generate_initial(B, Y2_1, lamb, sample_size, subsample_size, num_init = num_init)
+for (i in 1:num_init) {
+  sfit_1 <- robust.BPST.est.s.1(B, Q2, K, lambda = lamb, Y = Y2_1, 
+                                rho = "bisquare", bdp = 0.5, 
+                                theta_start = as.matrix(theta_start_2_1[,i]),
+                                maxit = 500, tol = 1e-6)
+  iter2_1[i] <- sfit_1$iteration
+  gamma[,i] <- drop(sfit_1$gamma)
+  obj_fun_val[i] <- sfit_1$obj_fun
+}
+gamma_s_2_1 <- gamma[, which.min(obj_fun_val)]
+
+# for 40% contamination 
+Bfull <- basis(V,Tr,d=deg,r=1,Z=sample_2_2$grid_samples,Hmtx=TRUE,Kmtx=TRUE,QR=TRUE,TA=TRUE)
+B <- Bfull$B
+H <- Bfull$H
+Q2 <- Bfull$Q2
+K <- Bfull$K
+gamma <- matrix(0, nrow = dim(B)[2], ncol = num_init)
+obj_fun_val <- rep(0, num_init)
+iter2_2 <- rep(0, num_init)
+
+theta_start_2_2 <- generate_initial(B, Y2_2, lamb, sample_size, subsample_size, num_init = num_init)
+for (i in 1:num_init) {
+  sfit_2 <- robust.BPST.est.s.1(B, Q2, K, lambda = lamb, Y = Y2_2, 
+                                rho = "bisquare", bdp = 0.5, 
+                                theta_start = as.matrix(theta_start_2_2[,i]),
+                                maxit = 500, tol = 1e-6)
+  iter2_2[i] <- sfit_2$iteration
+  gamma[,i] <- drop(sfit_2$gamma)
+  obj_fun_val[i] <- sfit_2$obj_fun
+}
+gamma_s_2_2 <- gamma[, which.min(obj_fun_val)]
+```
+
+```{r fig.height = 4, fig.width = 10, fig.align = "center", out.width='100%', warning=FALSE}
+
+B_pred <- basis(V,Tr,d=deg,r=1,Z,FALSE,FALSE,FALSE,FALSE)
+zs1_1 <- B_pred$B %*% as.matrix(gamma_s_1_1)
+zs1_2 <- B_pred$B %*% as.matrix(gamma_s_1_2)
+zs2_1 <- B_pred$B %*% as.matrix(gamma_s_2_1)
+zs2_2 <- B_pred$B %*% as.matrix(gamma_s_2_2)
+
+
+plotly_figure_s_1_1 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z1_1,
+  type = "surface", 
+  scene = "scene1"
+) %>%
+  add_surface(x = unique(xy_grid[, 1]),
+              y = unique(xy_grid[, 2]),
+              z = matrix(zs1_1, nrow = 101, byrow = TRUE)) %>% 
+  add_trace(data = df1_1, x = df1_1[ , 1], y = df1_1[ , 2], z = df1_1[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black"))%>%
+  layout(scene5 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure_s_1_2 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z1_2,
+  type = "surface",
+  scene = "scene2"
+) %>%
+  add_surface(x = unique(xy_grid[, 1]),
+              y = unique(xy_grid[, 2]),
+              z = matrix(zs1_2, nrow = 101, byrow = TRUE)) %>% 
+  add_trace(data = df1_2, x = df1_2[ , 1], y = df1_2[ , 2], z = df1_2[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black"))%>%
+  layout(scene2 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure_s_2_1 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z2_1,
+  type = "surface", 
+  scene = "scene3"
+) %>%
+  add_surface(x = unique(xy_grid[, 1]),
+              y = unique(xy_grid[, 2]),
+              z = matrix(zs2_1, nrow = 101, byrow = TRUE)) %>% 
+  add_trace(data = df2_1, x = df2_1[ , 1], y = df2_1[ , 2], z = df2_1[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black"))%>%
+  layout(scene3 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+plotly_figure_s_2_2 <- plot_ly(
+  x = unique(xy_grid[, 1]),
+  y = unique(xy_grid[, 2]),
+  z = z2_2,
+  type = "surface",
+  scene = "scene4"
+) %>%
+  add_surface(x = unique(xy_grid[, 1]),
+              y = unique(xy_grid[, 2]),
+              z = matrix(zs2_2, nrow = 101, byrow = TRUE)) %>% 
+  add_trace(data = df2_2, x = df2_2[ , 1], y = df2_2[ , 2], z = df2_2[ , 3],
+            mode = "markers", type = "scatter3d",
+            marker = list(size = 1, color = "black"))%>%
+  layout(scene4 = list(camera = list(
+    eye = list(
+      x = -1.25,
+      y = -1.25,
+      z = 1.25
+    ),
+    center = list(x = 0,
+                  y = 0,
+                  z = 0)
+  )))
+
+subplot(plotly_figure_s_1_1, plotly_figure_s_1_2, plotly_figure_s_2_1, plotly_figure_s_2_2, nrows=2)
+```
